@@ -1,82 +1,130 @@
-const Database = require("better-sqlite3");
-const fs = require("fs");
-const path = require("path");
+const { Pool } = require("pg");
 
-const db = new Database("./album-picker.db");
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
-const schema = fs.readFileSync(
-  path.join(__dirname, "..", "schema.sql"),
-  "utf8"
-);
+async function init() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS rounds (
+      id SERIAL PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      selected_user_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending','accepted','skipped','expired')),
+      message_ts TEXT NOT NULL,
+      deadline_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    );
+  `);
 
-db.exec(schema);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS winner_history (
+      id SERIAL PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      picked_at TIMESTAMPTZ NOT NULL,
+      round_id INTEGER NOT NULL REFERENCES rounds(id)
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_rounds_status_deadline
+    ON rounds(status, deadline_at);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_winner_history_channel_picked
+    ON winner_history(channel_id, picked_at);
+  `);
+}
 
 function now() {
   return new Date().toISOString();
 }
 
 module.exports = {
-  createRound({ channelId, selectedUserId, status, messageTs, deadlineAt }) {
-    const stmt = db.prepare(`
-      INSERT INTO rounds (channel_id, selected_user_id, status, message_ts, deadline_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
+  async init() {
+    await init();
+  },
 
-    const result = stmt.run(
-      channelId,
-      selectedUserId,
-      status,
-      messageTs,
-      deadlineAt,
-      now(),
-      now()
+  async createRound({ channelId, selectedUserId, status, messageTs, deadlineAt }) {
+    const result = await pool.query(
+      `
+      INSERT INTO rounds (
+        channel_id, selected_user_id, status, message_ts, deadline_at, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING id
+      `,
+      [channelId, selectedUserId, status, messageTs, deadlineAt, now(), now()]
     );
 
-    return result.lastInsertRowid;
+    return result.rows[0].id;
   },
 
-  updateRoundStatus(roundId, status) {
-    db.prepare(`
+  async updateRoundStatus(roundId, status) {
+    await pool.query(
+      `
       UPDATE rounds
-      SET status = ?, updated_at = ?
-      WHERE id = ?
-    `).run(status, now(), roundId);
+      SET status = $1, updated_at = $2
+      WHERE id = $3
+      `,
+      [status, now(), roundId]
+    );
   },
 
-  getPendingRoundByMessageTs(messageTs) {
-    return db.prepare(`
+  async getPendingRoundByMessageTs(messageTs) {
+    const result = await pool.query(
+      `
       SELECT *
       FROM rounds
-      WHERE message_ts = ?
+      WHERE message_ts = $1
       AND status = 'pending'
       LIMIT 1
-    `).get(messageTs);
+      `,
+      [messageTs]
+    );
+
+    return result.rows[0] || null;
   },
 
-  getExpiredPendingRounds(currentIso) {
-    return db.prepare(`
+  async getExpiredPendingRounds(currentIso) {
+    const result = await pool.query(
+      `
       SELECT *
       FROM rounds
       WHERE status = 'pending'
-      AND deadline_at <= ?
-    `).all(currentIso);
+      AND deadline_at <= $1
+      `,
+      [currentIso]
+    );
+
+    return result.rows;
   },
 
-  addWinnerHistory({ channelId, userId, roundId, pickedAt }) {
-    db.prepare(`
+  async addWinnerHistory({ channelId, userId, roundId, pickedAt }) {
+    await pool.query(
+      `
       INSERT INTO winner_history (channel_id, user_id, picked_at, round_id)
-      VALUES (?, ?, ?, ?)
-    `).run(channelId, userId, pickedAt, roundId);
+      VALUES ($1, $2, $3, $4)
+      `,
+      [channelId, userId, pickedAt, roundId]
+    );
   },
 
-  getRecentWinnerIds(channelId, sinceIso) {
-    const rows = db.prepare(`
+  async getRecentWinnerIds(channelId, sinceIso) {
+    const result = await pool.query(
+      `
       SELECT DISTINCT user_id
       FROM winner_history
-      WHERE channel_id = ?
-      AND picked_at >= ?
-    `).all(channelId, sinceIso);
+      WHERE channel_id = $1
+      AND picked_at >= $2
+      `,
+      [channelId, sinceIso]
+    );
 
-    return rows.map(r => r.user_id);
+    return result.rows.map((r) => r.user_id);
   }
 };
