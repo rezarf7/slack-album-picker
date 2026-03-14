@@ -16,6 +16,11 @@ async function getSpotifyAccessToken() {
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
 
+  console.log("Spotify env present:", {
+    hasClientId: !!clientId,
+    hasClientSecret: !!clientSecret
+  });
+
   if (!clientId || !clientSecret) {
     throw new Error("Missing SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET");
   }
@@ -34,6 +39,8 @@ async function getSpotifyAccessToken() {
   });
 
   if (!res.ok) {
+    const text = await res.text();
+    console.error("Spotify token request failed:", res.status, text);
     throw new Error(`Spotify token request failed: ${res.status}`);
   }
 
@@ -44,10 +51,13 @@ async function getSpotifyAccessToken() {
     expiresAt: now + (data.expires_in - 60) * 1000
   };
 
+  console.log("Spotify token acquired");
   return spotifyTokenCache.accessToken;
 }
 
 async function searchSpotifyAlbum(artist, album) {
+  console.log("Spotify search starting:", { artist, album });
+
   const token = await getSpotifyAccessToken();
   const q = `album:${album} artist:${artist}`;
 
@@ -63,12 +73,19 @@ async function searchSpotifyAlbum(artist, album) {
   });
 
   if (!res.ok) {
+    const text = await res.text();
+    console.error("Spotify search failed:", res.status, text);
     throw new Error(`Spotify search failed: ${res.status}`);
   }
 
   const data = await res.json();
+  console.log("Spotify search result count:", data.albums?.items?.length || 0);
+
   const item = data.albums?.items?.[0];
-  if (!item) return null;
+  if (!item) {
+    console.log("Spotify search found no match");
+    return null;
+  }
 
   return {
     url: item.external_urls?.spotify || null,
@@ -112,6 +129,14 @@ async function enrichAlbum(artist, album) {
     searchSpotifyAlbum(artist, album),
     searchAppleAlbum(artist, album)
   ]);
+
+  if (spotify.status === "rejected") {
+    console.error("Spotify enrichment failed:", spotify.reason);
+  }
+
+  if (apple.status === "rejected") {
+    console.error("Apple enrichment failed:", apple.reason);
+  }
 
   const spotifyValue = spotify.status === "fulfilled" ? spotify.value : null;
   const appleValue = apple.status === "fulfilled" ? apple.value : null;
