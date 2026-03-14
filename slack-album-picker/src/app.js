@@ -1,309 +1,171 @@
-require("dotenv").config();
-const { app } = require("./slack");
-const db = require("./db");
-const { runNewPick } = require("./picker");
-const { enrichAlbum } = require("./music");
+const SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token";
+const SPOTIFY_SEARCH_URL = "https://api.spotify.com/v1/search";
+const ITUNES_SEARCH_URL = "https://itunes.apple.com/search";
 
-function nominationModal(roundId) {
+let spotifyTokenCache = {
+  accessToken: null,
+  expiresAt: 0
+};
+
+async function getSpotifyAccessToken() {
+  const now = Date.now();
+
+  if (spotifyTokenCache.accessToken && now < spotifyTokenCache.expiresAt) {
+    return spotifyTokenCache.accessToken;
+  }
+
+  const clientId = process.env.SPOTIFY_CLIENT_ID;
+  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+
+  console.log("Spotify env present:", {
+    hasClientId: !!clientId,
+    hasClientSecret: !!clientSecret
+  });
+
+  if (!clientId || !clientSecret) {
+    throw new Error("Missing SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET");
+  }
+
+  const auth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+
+  const res = await fetch(SPOTIFY_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: new URLSearchParams({
+      grant_type: "client_credentials"
+    })
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("Spotify token request failed:", res.status, text);
+    throw new Error(`Spotify token request failed: ${res.status}`);
+  }
+
+  const data = await res.json();
+
+  spotifyTokenCache = {
+    accessToken: data.access_token,
+    expiresAt: now + (data.expires_in - 60) * 1000
+  };
+
+  console.log("Spotify token acquired");
+  return spotifyTokenCache.accessToken;
+}
+
+async function searchSpotifyAlbum(artist, album) {
+  console.log("Spotify search starting:", { artist, album });
+
+  const token = await getSpotifyAccessToken();
+  const q = `album:${album} artist:${artist}`;
+
+  const url = new URL(SPOTIFY_SEARCH_URL);
+  url.searchParams.set("q", q);
+  url.searchParams.set("type", "album");
+  url.searchParams.set("limit", "1");
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("Spotify search failed:", res.status, text);
+    throw new Error(`Spotify search failed: ${res.status}`);
+  }
+
+  const data = await res.json();
+  console.log("Spotify search result count:", data.albums?.items?.length || 0);
+
+  const item = data.albums?.items?.[0];
+  if (!item) {
+    console.log("Spotify search found no match");
+    return null;
+  }
+
   return {
-    type: "modal",
-    callback_id: "submit_nomination",
-    private_metadata: JSON.stringify({ roundId }),
-    title: {
-      type: "plain_text",
-      text: "Submit nomination"
-    },
-    submit: {
-      type: "plain_text",
-      text: "Submit"
-    },
-    close: {
-      type: "plain_text",
-      text: "Cancel"
-    },
-    blocks: [
-      {
-        type: "input",
-        block_id: "artist_block",
-        label: {
-          type: "plain_text",
-          text: "Artist"
-        },
-        element: {
-          type: "plain_text_input",
-          action_id: "artist_input"
-        }
-      },
-      {
-        type: "input",
-        block_id: "album_block",
-        label: {
-          type: "plain_text",
-          text: "Album"
-        },
-        element: {
-          type: "plain_text_input",
-          action_id: "album_input"
-        }
-      }
-    ]
+    id: item.id || null,
+    url: item.external_urls?.spotify || null,
+    imageUrl: item.images?.[0]?.url || null,
+    album: item.name || album,
+    artist: item.artists?.map((a) => a.name).join(", ") || artist
   };
 }
 
-function buildFinalNominationBlocks({
-  pickerUserId,
-  artist,
-  album,
-  imageUrl,
-  spotifyUrl,
-  appleUrl,
-  albumOfTheYearUrl
-}) {
-  const actions = [];
+async function searchAppleAlbum(artist, album) {
+  const url = new URL(ITUNES_SEARCH_URL);
+  url.searchParams.set("term", `${artist} ${album}`);
+  url.searchParams.set("media", "music");
+  url.searchParams.set("entity", "album");
+  url.searchParams.set("limit", "1");
 
-  if (spotifyUrl) {
-    actions.push({
-      type: "button",
-      text: {
-        type: "plain_text",
-        text: "Open in Spotify"
-      },
-      url: spotifyUrl
-    });
+  const res = await fetch(url);
+
+  if (!res.ok) {
+    throw new Error(`Apple search failed: ${res.status}`);
   }
 
-  if (appleUrl) {
-    actions.push({
-      type: "button",
-      text: {
-        type: "plain_text",
-        text: "Open in Apple Music"
-      },
-      url: appleUrl
-    });
+  const data = await res.json();
+  const item = data.results?.[0];
+
+  if (!item) {
+    return null;
   }
 
-  if (albumOfTheYearUrl) {
-    actions.push({
-      type: "button",
-      text: {
-        type: "plain_text",
-        text: "Album of the Year"
-      },
-      url: albumOfTheYearUrl
-    });
-  }
+  const imageUrl =
+    item.artworkUrl100?.replace("100x100bb", "600x600bb") ||
+    item.artworkUrl100 ||
+    null;
 
-  const blocks = [
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `🎶 <@${pickerUserId}>'s nomination:\n*${album}* — ${artist}`
-      },
-      ...(imageUrl
-        ? {
-            accessory: {
-              type: "image",
-              image_url: imageUrl,
-              alt_text: `${album} cover art`
-            }
-          }
-        : {})
-    }
-  ];
-
-  if (actions.length) {
-    blocks.push({
-      type: "actions",
-      elements: actions
-    });
-  }
-
-  return blocks;
+  return {
+    url: item.collectionViewUrl || null,
+    imageUrl,
+    album: item.collectionName || album,
+    artist: item.artistName || artist
+  };
 }
 
-app.action("accept_pick", async ({ ack, body, client }) => {
-  console.log("accept_pick clicked", {
-    user: body.user?.id,
-    ts: body.message?.ts,
-    channel: body.channel?.id
-  });
+function buildAlbumOfTheYearSearchUrl(artist, album) {
+  return `https://www.albumoftheyear.org/search/?q=${encodeURIComponent(
+    `${artist} ${album}`
+  )}`;
+}
 
-  await ack();
+async function enrichAlbum(artist, album) {
+  const [spotify, apple] = await Promise.allSettled([
+    searchSpotifyAlbum(artist, album),
+    searchAppleAlbum(artist, album)
+  ]);
 
-  setTimeout(async () => {
-    try {
-      const round = await db.getPendingRoundByMessageTs(body.message.ts);
-      console.log("accept_pick round lookup result:", round);
+  if (spotify.status === "rejected") {
+    console.error("Spotify enrichment failed:", spotify.reason);
+  }
 
-      if (!round) {
-        console.log("accept_pick: no pending round found");
-        return;
-      }
+  if (apple.status === "rejected") {
+    console.error("Apple enrichment failed:", apple.reason);
+  }
 
-      if (body.user.id !== round.selected_user_id) {
-        await client.chat.postEphemeral({
-          channel: body.channel.id,
-          user: body.user.id,
-          text: "Only the selected person can accept this round."
-        });
-        return;
-      }
+  const spotifyValue = spotify.status === "fulfilled" ? spotify.value : null;
+  const appleValue = apple.status === "fulfilled" ? apple.value : null;
 
-      await client.views.open({
-        trigger_id: body.trigger_id,
-        view: nominationModal(round.id)
-      });
+  const finalArtist = spotifyValue?.artist || appleValue?.artist || artist;
+  const finalAlbum = spotifyValue?.album || appleValue?.album || album;
 
-      console.log("accept_pick: modal opened for round", round.id);
-    } catch (err) {
-      console.error("accept_pick failed:", err);
-    }
-  }, 0);
-});
+  return {
+    spotify: spotifyValue,
+    apple: appleValue,
+    albumOfTheYearUrl: buildAlbumOfTheYearSearchUrl(finalArtist, finalAlbum),
+    artist: finalArtist,
+    album: finalAlbum,
+    imageUrl: spotifyValue?.imageUrl || appleValue?.imageUrl || null
+  };
+}
 
-app.view("submit_nomination", async ({ ack, body, view, client }) => {
-  console.log("submit_nomination received");
-
-  await ack();
-
-  console.log("submit_nomination acked");
-
-  setTimeout(async () => {
-    try {
-      const metadata = JSON.parse(view.private_metadata || "{}");
-      const roundId = metadata.roundId;
-
-      const artist =
-        view.state.values.artist_block.artist_input.value.trim();
-      const album =
-        view.state.values.album_block.album_input.value.trim();
-
-      console.log("submit_nomination values:", {
-        roundId,
-        user: body.user?.id,
-        artist,
-        album
-      });
-
-      const round = await db.getRoundById(roundId);
-      console.log("submit_nomination round lookup:", round);
-
-      if (!round) {
-        console.log("submit_nomination: no round found");
-        return;
-      }
-
-      if (body.user.id !== round.selected_user_id) {
-        console.log("submit_nomination: wrong user for round");
-        return;
-      }
-
-      const enriched = await enrichAlbum(artist, album);
-      console.log("submit_nomination enriched result:", enriched);
-
-      await db.createNomination({
-        roundId,
-        pickerUserId: body.user.id,
-        artist: enriched.artist,
-        album: enriched.album,
-        spotifyUrl: enriched.spotify?.url || null,
-        spotifyImageUrl: enriched.spotify?.imageUrl || null,
-        appleUrl: enriched.apple?.url || null,
-        appleImageUrl: enriched.apple?.imageUrl || null
-      });
-
-      console.log("submit_nomination: nomination saved");
-
-      await db.updateRoundStatus(round.id, "submitted");
-      console.log("submit_nomination: round marked submitted");
-
-      const blocks = buildFinalNominationBlocks({
-        pickerUserId: body.user.id,
-        artist: enriched.artist,
-        album: enriched.album,
-        imageUrl: enriched.imageUrl,
-        spotifyUrl: enriched.spotify?.url || null,
-        appleUrl: enriched.apple?.url || null,
-        albumOfTheYearUrl: enriched.albumOfTheYearUrl || null
-      });
-
-      await client.chat.postMessage({
-        channel: round.channel_id,
-        text: `${enriched.album} — ${enriched.artist}`,
-        blocks
-      });
-
-      console.log("submit_nomination: posted to main channel");
-
-      if (process.env.SLACK_LOG_CHANNEL_ID) {
-        await client.chat.postMessage({
-          channel: process.env.SLACK_LOG_CHANNEL_ID,
-          text: `${enriched.album} — ${enriched.artist}`,
-          blocks
-        });
-
-        console.log("submit_nomination: posted to log channel");
-      }
-    } catch (err) {
-      console.error("submit_nomination failed:", err);
-    }
-  }, 0);
-});
-
-app.action("skip_me", async ({ ack, body, client }) => {
-  console.log("skip_me clicked", {
-    user: body.user?.id,
-    ts: body.message?.ts,
-    channel: body.channel?.id
-  });
-
-  await ack();
-
-  setTimeout(async () => {
-    try {
-      const round = await db.getPendingRoundByMessageTs(body.message.ts);
-      console.log("skip_me round lookup result:", round);
-
-      if (!round) {
-        console.log("skip_me: no pending round found");
-        return;
-      }
-
-      if (body.user.id !== round.selected_user_id) {
-        await client.chat.postEphemeral({
-          channel: body.channel.id,
-          user: body.user.id,
-          text: "Only the selected person can skip."
-        });
-        return;
-      }
-
-      await db.updateRoundStatus(round.id, "skipped");
-      console.log("skip_me: round skipped", round.id);
-
-      await client.chat.postMessage({
-        channel: body.channel.id,
-        text: `<@${body.user.id}> skipped this week. Rerolling...`
-      });
-
-      await runNewPick({
-        client,
-        channelId: body.channel.id,
-        prefixText: "Reroll: ",
-        excludeUserIds: [body.user.id]
-      });
-
-      console.log("skip_me: reroll triggered");
-    } catch (err) {
-      console.error("skip_me failed:", err);
-    }
-  }, 0);
-});
-
-(async () => {
-  await db.init();
-  await app.start();
-  console.log("Slack app is running");
-})();
+module.exports = {
+  enrichAlbum
+};
