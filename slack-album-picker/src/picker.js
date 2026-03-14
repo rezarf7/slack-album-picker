@@ -1,6 +1,12 @@
 const db = require("./db");
 const { buildPickerBlocks } = require("./slack");
 
+function subtractWeeks(date, weeks) {
+  const d = new Date(date);
+  d.setDate(d.getDate() - weeks * 7);
+  return d;
+}
+
 function random(items) {
   return items[Math.floor(Math.random() * items.length)];
 }
@@ -27,12 +33,14 @@ async function getEligibleMembers(client, channel) {
   const ids = await getMembers(client, channel);
 
   const users = await Promise.all(
-    ids.map(async id => {
+    ids.map(async (id) => {
       try {
         const res = await client.users.info({ user: id });
         const u = res.user;
 
-        if (!u || u.deleted || u.is_bot || u.is_app_user) return null;
+        if (!u || u.deleted || u.is_bot || u.is_app_user || u.id === "USLACKBOT") {
+          return null;
+        }
 
         return { id: u.id };
       } catch {
@@ -53,7 +61,7 @@ async function announcePick({ client, channelId, userId, prefixText = "" }) {
     blocks: buildPickerBlocks(userId, deadline)
   });
 
-  const roundId = db.createRound({
+  const roundId = await db.createRound({
     channelId,
     selectedUserId: userId,
     status: "pending",
@@ -61,7 +69,7 @@ async function announcePick({ client, channelId, userId, prefixText = "" }) {
     deadlineAt: deadline
   });
 
-  db.addWinnerHistory({
+  await db.addWinnerHistory({
     channelId,
     userId,
     roundId,
@@ -74,9 +82,19 @@ async function announcePick({ client, channelId, userId, prefixText = "" }) {
 async function runNewPick({ client, channelId, prefixText = "", excludeUserIds = [] }) {
   const members = await getEligibleMembers(client, channelId);
 
-  let pool = members.filter(m => !excludeUserIds.includes(m.id));
+  const twelveWeeksAgo = subtractWeeks(new Date(), 12).toISOString();
+  const recentWinnerIds = await db.getRecentWinnerIds(channelId, twelveWeeksAgo);
 
-  if (!pool.length) pool = members;
+  let excluded = new Set([...excludeUserIds, ...recentWinnerIds]);
+  let pool = members.filter((m) => !excluded.has(m.id));
+
+  if (!pool.length) {
+    pool = members.filter((m) => !excludeUserIds.includes(m.id));
+  }
+
+  if (!pool.length) {
+    throw new Error("No eligible members found.");
+  }
 
   const winner = random(pool);
 
