@@ -56,7 +56,8 @@ function buildFinalNominationBlocks({
   album,
   imageUrl,
   spotifyUrl,
-  appleUrl
+  appleUrl,
+  albumOfTheYearUrl
 }) {
   const actions = [];
 
@@ -79,6 +80,17 @@ function buildFinalNominationBlocks({
         text: "Open in Apple Music"
       },
       url: appleUrl
+    });
+  }
+
+  if (albumOfTheYearUrl) {
+    actions.push({
+      type: "button",
+      text: {
+        type: "plain_text",
+        text: "Album of the Year"
+      },
+      url: albumOfTheYearUrl
     });
   }
 
@@ -213,7 +225,8 @@ app.view("submit_nomination", async ({ ack, body, view, client }) => {
         album: enriched.album,
         imageUrl: enriched.imageUrl,
         spotifyUrl: enriched.spotify?.url || null,
-        appleUrl: enriched.apple?.url || null
+        appleUrl: enriched.apple?.url || null,
+        albumOfTheYearUrl: enriched.albumOfTheYearUrl || null
       });
 
       await client.chat.postMessage({
