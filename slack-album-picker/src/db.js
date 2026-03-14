@@ -11,7 +11,7 @@ async function init() {
       id SERIAL PRIMARY KEY,
       channel_id TEXT NOT NULL,
       selected_user_id TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('pending','accepted','skipped','expired')),
+      status TEXT NOT NULL CHECK (status IN ('pending','accepted','skipped','expired','submitted')),
       message_ts TEXT NOT NULL,
       deadline_at TIMESTAMPTZ NOT NULL,
       created_at TIMESTAMPTZ NOT NULL,
@@ -30,6 +30,22 @@ async function init() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS nominations (
+      id SERIAL PRIMARY KEY,
+      round_id INTEGER NOT NULL REFERENCES rounds(id),
+      picker_user_id TEXT NOT NULL,
+      artist TEXT NOT NULL,
+      album TEXT NOT NULL,
+      spotify_url TEXT,
+      spotify_image_url TEXT,
+      apple_url TEXT,
+      apple_image_url TEXT,
+      submitted_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL
+    );
+  `);
+
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_rounds_status_deadline
     ON rounds(status, deadline_at);
   `);
@@ -37,6 +53,11 @@ async function init() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_winner_history_channel_picked
     ON winner_history(channel_id, picked_at);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_nominations_round_id
+    ON nominations(round_id);
   `);
 }
 
@@ -90,6 +111,20 @@ module.exports = {
     return result.rows[0] || null;
   },
 
+  async getRoundById(roundId) {
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM rounds
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [roundId]
+    );
+
+    return result.rows[0] || null;
+  },
+
   async getExpiredPendingRounds(currentIso) {
     const result = await pool.query(
       `
@@ -126,5 +161,42 @@ module.exports = {
     );
 
     return result.rows.map((r) => r.user_id);
+  },
+
+  async createNomination({
+    roundId,
+    pickerUserId,
+    artist,
+    album,
+    spotifyUrl,
+    spotifyImageUrl,
+    appleUrl,
+    appleImageUrl
+  }) {
+    const result = await pool.query(
+      `
+      INSERT INTO nominations (
+        round_id, picker_user_id, artist, album,
+        spotify_url, spotify_image_url, apple_url, apple_image_url,
+        submitted_at, created_at
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      RETURNING id
+      `,
+      [
+        roundId,
+        pickerUserId,
+        artist,
+        album,
+        spotifyUrl || null,
+        spotifyImageUrl || null,
+        appleUrl || null,
+        appleImageUrl || null,
+        now(),
+        now()
+      ]
+    );
+
+    return result.rows[0].id;
   }
 };
