@@ -50,7 +50,14 @@ function nominationModal(roundId) {
   };
 }
 
-function buildFinalNominationBlocks({ pickerUserId, artist, album, imageUrl, spotifyUrl, appleUrl }) {
+function buildFinalNominationBlocks({
+  pickerUserId,
+  artist,
+  album,
+  imageUrl,
+  spotifyUrl,
+  appleUrl
+}) {
   const actions = [];
 
   if (spotifyUrl) {
@@ -105,12 +112,23 @@ function buildFinalNominationBlocks({ pickerUserId, artist, album, imageUrl, spo
 }
 
 app.action("accept_pick", async ({ ack, body, client }) => {
+  console.log("accept_pick clicked", {
+    user: body.user?.id,
+    ts: body.message?.ts,
+    channel: body.channel?.id
+  });
+
   await ack();
 
   setTimeout(async () => {
     try {
       const round = await db.getPendingRoundByMessageTs(body.message.ts);
-      if (!round) return;
+      console.log("accept_pick round lookup result:", round);
+
+      if (!round) {
+        console.log("accept_pick: no pending round found");
+        return;
+      }
 
       if (body.user.id !== round.selected_user_id) {
         await client.chat.postEphemeral({
@@ -125,6 +143,8 @@ app.action("accept_pick", async ({ ack, body, client }) => {
         trigger_id: body.trigger_id,
         view: nominationModal(round.id)
       });
+
+      console.log("accept_pick: modal opened for round", round.id);
     } catch (err) {
       console.error("accept_pick failed:", err);
     }
@@ -132,7 +152,11 @@ app.action("accept_pick", async ({ ack, body, client }) => {
 });
 
 app.view("submit_nomination", async ({ ack, body, view, client }) => {
+  console.log("submit_nomination received");
+
   await ack();
+
+  console.log("submit_nomination acked");
 
   setTimeout(async () => {
     try {
@@ -144,11 +168,28 @@ app.view("submit_nomination", async ({ ack, body, view, client }) => {
       const album =
         view.state.values.album_block.album_input.value.trim();
 
+      console.log("submit_nomination values:", {
+        roundId,
+        user: body.user?.id,
+        artist,
+        album
+      });
+
       const round = await db.getRoundById(roundId);
-      if (!round) return;
-      if (body.user.id !== round.selected_user_id) return;
+      console.log("submit_nomination round lookup:", round);
+
+      if (!round) {
+        console.log("submit_nomination: no round found");
+        return;
+      }
+
+      if (body.user.id !== round.selected_user_id) {
+        console.log("submit_nomination: wrong user for round");
+        return;
+      }
 
       const enriched = await enrichAlbum(artist, album);
+      console.log("submit_nomination enriched result:", enriched);
 
       await db.createNomination({
         roundId,
@@ -161,7 +202,10 @@ app.view("submit_nomination", async ({ ack, body, view, client }) => {
         appleImageUrl: enriched.apple?.imageUrl || null
       });
 
+      console.log("submit_nomination: nomination saved");
+
       await db.updateRoundStatus(round.id, "submitted");
+      console.log("submit_nomination: round marked submitted");
 
       const blocks = buildFinalNominationBlocks({
         pickerUserId: body.user.id,
@@ -178,12 +222,16 @@ app.view("submit_nomination", async ({ ack, body, view, client }) => {
         blocks
       });
 
+      console.log("submit_nomination: posted to main channel");
+
       if (process.env.SLACK_LOG_CHANNEL_ID) {
         await client.chat.postMessage({
           channel: process.env.SLACK_LOG_CHANNEL_ID,
           text: `${enriched.album} — ${enriched.artist}`,
           blocks
         });
+
+        console.log("submit_nomination: posted to log channel");
       }
     } catch (err) {
       console.error("submit_nomination failed:", err);
@@ -192,12 +240,23 @@ app.view("submit_nomination", async ({ ack, body, view, client }) => {
 });
 
 app.action("skip_me", async ({ ack, body, client }) => {
+  console.log("skip_me clicked", {
+    user: body.user?.id,
+    ts: body.message?.ts,
+    channel: body.channel?.id
+  });
+
   await ack();
 
   setTimeout(async () => {
     try {
       const round = await db.getPendingRoundByMessageTs(body.message.ts);
-      if (!round) return;
+      console.log("skip_me round lookup result:", round);
+
+      if (!round) {
+        console.log("skip_me: no pending round found");
+        return;
+      }
 
       if (body.user.id !== round.selected_user_id) {
         await client.chat.postEphemeral({
@@ -209,6 +268,7 @@ app.action("skip_me", async ({ ack, body, client }) => {
       }
 
       await db.updateRoundStatus(round.id, "skipped");
+      console.log("skip_me: round skipped", round.id);
 
       await client.chat.postMessage({
         channel: body.channel.id,
@@ -221,6 +281,8 @@ app.action("skip_me", async ({ ack, body, client }) => {
         prefixText: "Reroll: ",
         excludeUserIds: [body.user.id]
       });
+
+      console.log("skip_me: reroll triggered");
     } catch (err) {
       console.error("skip_me failed:", err);
     }
