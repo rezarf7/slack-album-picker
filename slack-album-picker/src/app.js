@@ -8,7 +8,7 @@ app.action("accept_pick", async ({ ack, body, client }) => {
 
   setTimeout(async () => {
     try {
-      const round = db.getPendingRoundByMessageTs(body.message.ts);
+      const round = await db.getPendingRoundByMessageTs(body.message.ts);
       if (!round) return;
 
       if (body.user.id !== round.selected_user_id) {
@@ -20,7 +20,7 @@ app.action("accept_pick", async ({ ack, body, client }) => {
         return;
       }
 
-      db.updateRoundStatus(round.id, "accepted");
+      await db.updateRoundStatus(round.id, "accepted");
 
       await client.chat.postEphemeral({
         channel: body.channel.id,
@@ -38,7 +38,7 @@ app.action("skip_me", async ({ ack, body, client }) => {
 
   setTimeout(async () => {
     try {
-      const round = db.getPendingRoundByMessageTs(body.message.ts);
+      const round = await db.getPendingRoundByMessageTs(body.message.ts);
       if (!round) return;
 
       if (body.user.id !== round.selected_user_id) {
@@ -50,7 +50,7 @@ app.action("skip_me", async ({ ack, body, client }) => {
         return;
       }
 
-      db.updateRoundStatus(round.id, "skipped");
+      await db.updateRoundStatus(round.id, "skipped");
 
       await client.chat.postMessage({
         channel: body.channel.id,
@@ -70,6 +70,7 @@ app.action("skip_me", async ({ ack, body, client }) => {
 });
 
 (async () => {
+  await db.init();
   await app.start();
   console.log("Slack app is running");
 })();
