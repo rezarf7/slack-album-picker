@@ -9,6 +9,7 @@ let spotifyTokenCache = {
 
 async function getSpotifyAccessToken() {
   const now = Date.now();
+
   if (spotifyTokenCache.accessToken && now < spotifyTokenCache.expiresAt) {
     return spotifyTokenCache.accessToken;
   }
@@ -104,13 +105,17 @@ async function searchAppleAlbum(artist, album) {
   url.searchParams.set("limit", "1");
 
   const res = await fetch(url);
+
   if (!res.ok) {
     throw new Error(`Apple search failed: ${res.status}`);
   }
 
   const data = await res.json();
   const item = data.results?.[0];
-  if (!item) return null;
+
+  if (!item) {
+    return null;
+  }
 
   const imageUrl =
     item.artworkUrl100?.replace("100x100bb", "600x600bb") ||
@@ -125,84 +130,16 @@ async function searchAppleAlbum(artist, album) {
   };
 }
 
-function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function cleanText(str) {
-  return (str || "")
-    .toLowerCase()
-    .replace(/&/g, "and")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-async function resolveAlbumOfTheYearUrl(artist, album) {
-  const searchUrl = new URL("https://www.albumoftheyear.org/search/");
-  searchUrl.searchParams.set("q", `${artist} ${album}`);
-
-  console.log("AoTY search starting:", searchUrl.toString());
-
-  const res = await fetch(searchUrl, {
-    headers: {
-      "User-Agent": "Mozilla/5.0"
-    }
-  });
-
-  if (!res.ok) {
-    console.error("AoTY search failed:", res.status);
-    return null;
-  }
-
-  const html = await res.text();
-
-  const albumLinkRegex = /href="(\/album\/\d+-[^"]+?\.php)"/g;
-  const matches = [];
-  let match;
-
-  while ((match = albumLinkRegex.exec(html)) !== null) {
-    matches.push(match[1]);
-  }
-
-  if (!matches.length) {
-    console.log("AoTY search found no album links");
-    return null;
-  }
-
-  const artistNorm = cleanText(artist);
-  const albumNorm = cleanText(album);
-
-  const scored = matches.map((path) => {
-    const slug = path
-      .replace(/^\/album\/\d+-/, "")
-      .replace(/\.php$/, "");
-
-    const slugNorm = cleanText(slug);
-
-    let score = 0;
-    if (slugNorm.includes(artistNorm)) score += 2;
-    if (slugNorm.includes(albumNorm)) score += 3;
-
-    return {
-      path,
-      score
-    };
-  });
-
-  scored.sort((a, b) => b.score - a.score);
-
-  const best = scored[0]?.path || matches[0];
-  const fullUrl = `https://www.albumoftheyear.org${best}`;
-
-  console.log("AoTY resolved URL:", fullUrl);
-  return fullUrl;
+function buildAlbumOfTheYearSearchUrl(artist, album) {
+  return `https://www.albumoftheyear.org/search/?q=${encodeURIComponent(
+    `${artist} ${album}`
+  )}`;
 }
 
 async function enrichAlbum(artist, album) {
-  const [spotify, apple, aoty] = await Promise.allSettled([
+  const [spotify, apple] = await Promise.allSettled([
     searchSpotifyAlbum(artist, album),
-    searchAppleAlbum(artist, album),
-    resolveAlbumOfTheYearUrl(artist, album)
+    searchAppleAlbum(artist, album)
   ]);
 
   if (spotify.status === "rejected") {
@@ -213,20 +150,18 @@ async function enrichAlbum(artist, album) {
     console.error("Apple enrichment failed:", apple.reason);
   }
 
-  if (aoty.status === "rejected") {
-    console.error("AoTY enrichment failed:", aoty.reason);
-  }
-
   const spotifyValue = spotify.status === "fulfilled" ? spotify.value : null;
   const appleValue = apple.status === "fulfilled" ? apple.value : null;
-  const aotyValue = aoty.status === "fulfilled" ? aoty.value : null;
+
+  const finalArtist = spotifyValue?.artist || appleValue?.artist || artist;
+  const finalAlbum = spotifyValue?.album || appleValue?.album || album;
 
   return {
     spotify: spotifyValue,
     apple: appleValue,
-    albumOfTheYearUrl: aotyValue,
-    artist: spotifyValue?.artist || appleValue?.artist || artist,
-    album: spotifyValue?.album || appleValue?.album || album,
+    albumOfTheYearUrl: buildAlbumOfTheYearSearchUrl(finalArtist, finalAlbum),
+    artist: finalArtist,
+    album: finalAlbum,
     imageUrl: spotifyValue?.imageUrl || appleValue?.imageUrl || null
   };
 }
