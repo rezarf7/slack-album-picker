@@ -1,27 +1,34 @@
 require("dotenv").config();
-const { app } = require("../slack");
 const db = require("../db");
+const { app } = require("../slack");
 const { runNewPick } = require("../picker");
 
 (async () => {
-  const expired = db.getExpiredPendingRounds(new Date().toISOString());
+  try {
+    await db.init();
 
-  for (const round of expired) {
-    db.updateRoundStatus(round.id, "expired");
+    const expired = await db.getExpiredPendingRounds(new Date().toISOString());
 
-    await app.client.chat.postMessage({
-      channel: round.channel_id,
-      text: `<@${round.selected_user_id}> timed out. Rerolling...`
-    });
+    for (const round of expired) {
+      await db.updateRoundStatus(round.id, "expired");
 
-    await runNewPick({
-      client: app.client,
-      channelId: round.channel_id,
-      prefixText: "Timeout reroll: ",
-      excludeUserIds: [round.selected_user_id]
-    });
+      await app.client.chat.postMessage({
+        channel: round.channel_id,
+        text: `<@${round.selected_user_id}> timed out. Rerolling...`
+      });
+
+      await runNewPick({
+        client: app.client,
+        channelId: round.channel_id,
+        prefixText: "Timeout reroll: ",
+        excludeUserIds: [round.selected_user_id]
+      });
+    }
+
+    console.log("Timeout check complete");
+    process.exit(0);
+  } catch (err) {
+    console.error("checkTimeouts failed:", err);
+    process.exit(1);
   }
-
-  console.log("Timeout check complete");
-  process.exit(0);
 })();
