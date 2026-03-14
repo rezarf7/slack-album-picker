@@ -1,3 +1,38 @@
+require("dotenv").config();
+const { app } = require("./slack");
+const db = require("./db");
+const { runNewPick } = require("./picker");
+
+app.action("accept_pick", async ({ ack, body, client }) => {
+  await ack();
+
+  setTimeout(async () => {
+    try {
+      const round = db.getPendingRoundByMessageTs(body.message.ts);
+      if (!round) return;
+
+      if (body.user.id !== round.selected_user_id) {
+        await client.chat.postEphemeral({
+          channel: body.channel.id,
+          user: body.user.id,
+          text: "Only the selected person can accept this round."
+        });
+        return;
+      }
+
+      db.updateRoundStatus(round.id, "accepted");
+
+      await client.chat.postEphemeral({
+        channel: body.channel.id,
+        user: body.user.id,
+        text: "You're locked in for this week."
+      });
+    } catch (err) {
+      console.error("accept_pick failed:", err);
+    }
+  }, 0);
+});
+
 app.action("skip_me", async ({ ack, body, client }) => {
   await ack();
 
@@ -33,3 +68,8 @@ app.action("skip_me", async ({ ack, body, client }) => {
     }
   }, 0);
 });
+
+(async () => {
+  await app.start();
+  console.log("Slack app is running");
+})();
