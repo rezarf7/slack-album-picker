@@ -4,11 +4,11 @@ const db = require("./db");
 const { runNewPick } = require("./picker");
 const { enrichAlbum } = require("./music");
 
-function nominationModal(roundId) {
+function nominationModal(messageTs) {
   return {
     type: "modal",
     callback_id: "submit_nomination",
-    private_metadata: JSON.stringify({ roundId }),
+    private_metadata: JSON.stringify({ messageTs }),
     title: {
       type: "plain_text",
       text: "Submit nomination"
@@ -133,34 +133,12 @@ app.action("accept_pick", async ({ ack, body, client }) => {
   await ack();
 
   try {
-    const round = await db.getPendingRoundByMessageTs(body.message.ts);
-    console.log("accept_pick round lookup result:", round);
-
-    if (!round) {
-      console.log("accept_pick: no pending round found");
-      await client.chat.postEphemeral({
-        channel: body.channel.id,
-        user: body.user.id,
-        text: "This round could not be found. Please try again."
-      });
-      return;
-    }
-
-    if (body.user.id !== round.selected_user_id) {
-      await client.chat.postEphemeral({
-        channel: body.channel.id,
-        user: body.user.id,
-        text: "Only the selected person can accept this round."
-      });
-      return;
-    }
-
     await client.views.open({
       trigger_id: body.trigger_id,
-      view: nominationModal(round.id)
+      view: nominationModal(body.message.ts)
     });
 
-    console.log("accept_pick: modal opened for round", round.id);
+    console.log("accept_pick: modal opened immediately");
   } catch (err) {
     console.error("accept_pick failed:", err);
 
@@ -181,7 +159,7 @@ app.view("submit_nomination", async ({ ack, body, view, client }) => {
 
   try {
     const metadata = JSON.parse(view.private_metadata || "{}");
-    const roundId = metadata.roundId;
+    const messageTs = metadata.messageTs;
 
     const artist =
       view.state.values.artist_block.artist_input.value.trim();
@@ -189,20 +167,20 @@ app.view("submit_nomination", async ({ ack, body, view, client }) => {
       view.state.values.album_block.album_input.value.trim();
 
     console.log("submit_nomination values:", {
-      roundId,
+      messageTs,
       user: body.user?.id,
       artist,
       album
     });
 
-    const round = await db.getRoundById(roundId);
+    const round = await db.getPendingRoundByMessageTs(messageTs);
     console.log("submit_nomination round lookup:", round);
 
     if (!round) {
       await ack({
         response_action: "errors",
         errors: {
-          album_block: "This round could not be found. Please close this window and try again."
+          album_block: "This round could not be found or is no longer pending. Please close this window and try again."
         }
       });
       return;
@@ -242,7 +220,7 @@ app.view("submit_nomination", async ({ ack, body, view, client }) => {
     console.log("submit_nomination acked");
 
     await db.createNomination({
-      roundId,
+      roundId: round.id,
       pickerUserId: body.user.id,
       artist: enriched.artist,
       album: enriched.album,
