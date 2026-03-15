@@ -166,90 +166,125 @@ app.action("accept_pick", async ({ ack, body, client }) => {
 app.view("submit_nomination", async ({ ack, body, view, client }) => {
   console.log("submit_nomination received");
 
-  await ack();
+  try {
+    const metadata = JSON.parse(view.private_metadata || "{}");
+    const roundId = metadata.roundId;
 
-  console.log("submit_nomination acked");
+    const artist =
+      view.state.values.artist_block.artist_input.value.trim();
+    const album =
+      view.state.values.album_block.album_input.value.trim();
 
-  setTimeout(async () => {
-    try {
-      const metadata = JSON.parse(view.private_metadata || "{}");
-      const roundId = metadata.roundId;
+    console.log("submit_nomination values:", {
+      roundId,
+      user: body.user?.id,
+      artist,
+      album
+    });
 
-      const artist =
-        view.state.values.artist_block.artist_input.value.trim();
-      const album =
-        view.state.values.album_block.album_input.value.trim();
+    const round = await db.getRoundById(roundId);
+    console.log("submit_nomination round lookup:", round);
 
-      console.log("submit_nomination values:", {
-        roundId,
-        user: body.user?.id,
-        artist,
-        album
+    if (!round) {
+      await ack({
+        response_action: "errors",
+        errors: {
+          album_block: "This round could not be found. Please close this window and try again."
+        }
       });
+      return;
+    }
 
-      const round = await db.getRoundById(roundId);
-      console.log("submit_nomination round lookup:", round);
-
-      if (!round) {
-        console.log("submit_nomination: no round found");
-        return;
-      }
-
-      if (body.user.id !== round.selected_user_id) {
-        console.log("submit_nomination: wrong user for round");
-        return;
-      }
-
-      const enriched = await enrichAlbum(artist, album);
-      console.log("submit_nomination enriched result:", enriched);
-
-      await db.createNomination({
-        roundId,
-        pickerUserId: body.user.id,
-        artist: enriched.artist,
-        album: enriched.album,
-        spotifyUrl: enriched.spotify?.url || null,
-        spotifyImageUrl: enriched.spotify?.imageUrl || null,
-        appleUrl: enriched.apple?.url || null,
-        appleImageUrl: enriched.apple?.imageUrl || null
+    if (body.user.id !== round.selected_user_id) {
+      await ack({
+        response_action: "errors",
+        errors: {
+          album_block: "Only the selected person can submit this nomination."
+        }
       });
+      return;
+    }
 
-      console.log("submit_nomination: nomination saved");
+    const enriched = await enrichAlbum(artist, album);
+    console.log("submit_nomination enriched result:", enriched);
 
-      await db.updateRoundStatus(round.id, "submitted");
-      console.log("submit_nomination: round marked submitted");
+    const existingNomination = await db.findExistingNomination(
+      enriched.artist,
+      enriched.album
+    );
 
-      const blocks = buildFinalNominationBlocks({
-        pickerUserId: body.user.id,
-        artist: enriched.artist,
-        album: enriched.album,
-        imageUrl: enriched.imageUrl,
-        spotifyUrl: enriched.spotify?.url || null,
-        appleUrl: enriched.apple?.url || null,
-        albumOfTheYearUrl: enriched.albumOfTheYearUrl || null
+    if (existingNomination) {
+      console.log("submit_nomination: duplicate nomination blocked", existingNomination);
+
+      await ack({
+        response_action: "errors",
+        errors: {
+          album_block: `That album has already been nominated before: ${enriched.album} — ${enriched.artist}. Please choose a different album.`
+        }
       });
+      return;
+    }
 
+    await ack();
+    console.log("submit_nomination acked");
+
+    await db.createNomination({
+      roundId,
+      pickerUserId: body.user.id,
+      artist: enriched.artist,
+      album: enriched.album,
+      spotifyUrl: enriched.spotify?.url || null,
+      spotifyImageUrl: enriched.spotify?.imageUrl || null,
+      appleUrl: enriched.apple?.url || null,
+      appleImageUrl: enriched.apple?.imageUrl || null
+    });
+
+    console.log("submit_nomination: nomination saved");
+
+    await db.updateRoundStatus(round.id, "submitted");
+    console.log("submit_nomination: round marked submitted");
+
+    const blocks = buildFinalNominationBlocks({
+      pickerUserId: body.user.id,
+      artist: enriched.artist,
+      album: enriched.album,
+      imageUrl: enriched.imageUrl,
+      spotifyUrl: enriched.spotify?.url || null,
+      appleUrl: enriched.apple?.url || null,
+      albumOfTheYearUrl: enriched.albumOfTheYearUrl || null
+    });
+
+    await client.chat.postMessage({
+      channel: round.channel_id,
+      text: `${enriched.album} — ${enriched.artist}`,
+      blocks
+    });
+
+    console.log("submit_nomination: posted to main channel");
+
+    if (process.env.SLACK_LOG_CHANNEL_ID) {
       await client.chat.postMessage({
-        channel: round.channel_id,
+        channel: process.env.SLACK_LOG_CHANNEL_ID,
         text: `${enriched.album} — ${enriched.artist}`,
         blocks
       });
 
-      console.log("submit_nomination: posted to main channel");
-
-      if (process.env.SLACK_LOG_CHANNEL_ID) {
-        await client.chat.postMessage({
-          channel: process.env.SLACK_LOG_CHANNEL_ID,
-          text: `${enriched.album} — ${enriched.artist}`,
-          blocks
-        });
-
-        console.log("submit_nomination: posted to log channel");
-      }
-    } catch (err) {
-      console.error("submit_nomination failed:", err);
+      console.log("submit_nomination: posted to log channel");
     }
-  }, 0);
+  } catch (err) {
+    console.error("submit_nomination failed:", err);
+
+    try {
+      await ack({
+        response_action: "errors",
+        errors: {
+          album_block: "Something went wrong while processing your nomination. Please try again."
+        }
+      });
+    } catch (ackErr) {
+      console.error("submit_nomination ack error:", ackErr);
+    }
+  }
 });
 
 app.action("skip_me", async ({ ack, body, client }) => {
