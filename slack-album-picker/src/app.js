@@ -132,35 +132,48 @@ app.action("accept_pick", async ({ ack, body, client }) => {
 
   await ack();
 
-  setTimeout(async () => {
-    try {
-      const round = await db.getPendingRoundByMessageTs(body.message.ts);
-      console.log("accept_pick round lookup result:", round);
+  try {
+    const round = await db.getPendingRoundByMessageTs(body.message.ts);
+    console.log("accept_pick round lookup result:", round);
 
-      if (!round) {
-        console.log("accept_pick: no pending round found");
-        return;
-      }
-
-      if (body.user.id !== round.selected_user_id) {
-        await client.chat.postEphemeral({
-          channel: body.channel.id,
-          user: body.user.id,
-          text: "Only the selected person can accept this round."
-        });
-        return;
-      }
-
-      await client.views.open({
-        trigger_id: body.trigger_id,
-        view: nominationModal(round.id)
+    if (!round) {
+      console.log("accept_pick: no pending round found");
+      await client.chat.postEphemeral({
+        channel: body.channel.id,
+        user: body.user.id,
+        text: "This round could not be found. Please try again."
       });
-
-      console.log("accept_pick: modal opened for round", round.id);
-    } catch (err) {
-      console.error("accept_pick failed:", err);
+      return;
     }
-  }, 0);
+
+    if (body.user.id !== round.selected_user_id) {
+      await client.chat.postEphemeral({
+        channel: body.channel.id,
+        user: body.user.id,
+        text: "Only the selected person can accept this round."
+      });
+      return;
+    }
+
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: nominationModal(round.id)
+    });
+
+    console.log("accept_pick: modal opened for round", round.id);
+  } catch (err) {
+    console.error("accept_pick failed:", err);
+
+    try {
+      await client.chat.postEphemeral({
+        channel: body.channel.id,
+        user: body.user.id,
+        text: "Sorry, I couldn't open the nomination form. Please try again."
+      });
+    } catch (postErr) {
+      console.error("accept_pick ephemeral failed:", postErr);
+    }
+  }
 });
 
 app.view("submit_nomination", async ({ ack, body, view, client }) => {
