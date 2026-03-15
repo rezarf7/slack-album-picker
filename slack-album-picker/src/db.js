@@ -198,5 +198,21 @@ module.exports = {
     );
 
     return result.rows[0].id;
+  },
+
+  async findExistingNomination(artist, album) {
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM nominations
+      WHERE LOWER(TRIM(artist)) = LOWER(TRIM($1))
+        AND LOWER(TRIM(album)) = LOWER(TRIM($2))
+      ORDER BY submitted_at ASC
+      LIMIT 1
+      `,
+      [artist, album]
+    );
+
+    return result.rows[0] || null;
   }
 };
