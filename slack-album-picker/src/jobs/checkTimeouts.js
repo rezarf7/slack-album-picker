@@ -14,7 +14,7 @@ function hoursRemaining(deadlineAt) {
 
     const nowIso = new Date().toISOString();
 
-    const roundsNeedingReminder = await db.getRoundsNeedingReminder(nowIso, 12);
+    const roundsNeedingReminder = await db.getRoundsNeedingReminder(nowIso, 0.5);
 
     for (const round of roundsNeedingReminder) {
       const remaining = hoursRemaining(round.deadline_at);
