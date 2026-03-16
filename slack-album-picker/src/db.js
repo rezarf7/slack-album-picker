@@ -14,6 +14,7 @@ async function init() {
       status TEXT NOT NULL CHECK (status IN ('pending','accepted','skipped','expired','submitted')),
       message_ts TEXT NOT NULL,
       deadline_at TIMESTAMPTZ NOT NULL,
+      reminder_sent_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL
     );
@@ -46,6 +47,11 @@ async function init() {
   `);
 
   await pool.query(`
+    ALTER TABLE rounds
+    ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ;
+  `);
+
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_rounds_status_deadline
     ON rounds(status, deadline_at);
   `);
@@ -74,12 +80,12 @@ module.exports = {
     const result = await pool.query(
       `
       INSERT INTO rounds (
-        channel_id, selected_user_id, status, message_ts, deadline_at, created_at, updated_at
+        channel_id, selected_user_id, status, message_ts, deadline_at, reminder_sent_at, created_at, updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING id
       `,
-      [channelId, selectedUserId, status, messageTs, deadlineAt, now(), now()]
+      [channelId, selectedUserId, status, messageTs, deadlineAt, null, now(), now()]
     );
 
     return result.rows[0].id;
@@ -93,6 +99,17 @@ module.exports = {
       WHERE id = $3
       `,
       [status, now(), roundId]
+    );
+  },
+
+  async markReminderSent(roundId) {
+    await pool.query(
+      `
+      UPDATE rounds
+      SET reminder_sent_at = $1, updated_at = $2
+      WHERE id = $3
+      `,
+      [now(), now(), roundId]
     );
   },
 
@@ -134,6 +151,22 @@ module.exports = {
       AND deadline_at <= $1
       `,
       [currentIso]
+    );
+
+    return result.rows;
+  },
+
+  async getRoundsNeedingReminder(currentIso, reminderWindowHours = 12) {
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM rounds
+      WHERE status = 'pending'
+        AND reminder_sent_at IS NULL
+        AND deadline_at > $1::timestamptz
+        AND deadline_at <= ($1::timestamptz + ($2 || ' hours')::interval)
+      `,
+      [currentIso, reminderWindowHours]
     );
 
     return result.rows;
