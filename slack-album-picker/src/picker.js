@@ -53,7 +53,7 @@ async function getEligibleMembers(client, channel) {
 }
 
 async function announcePick({ client, channelId, userId, prefixText = "" }) {
-  const deadline = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const deadline = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
 
   const res = await client.chat.postMessage({
     channel: channelId,
