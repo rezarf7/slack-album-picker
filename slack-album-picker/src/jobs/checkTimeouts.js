@@ -14,7 +14,6 @@ function hoursRemaining(deadlineAt) {
 
     const nowIso = new Date().toISOString();
 
-    // 1) Send reminders for rounds nearing expiry
     const roundsNeedingReminder = await db.getRoundsNeedingReminder(nowIso, 12);
 
     for (const round of roundsNeedingReminder) {
@@ -24,7 +23,30 @@ function hoursRemaining(deadlineAt) {
         await app.client.chat.postEphemeral({
           channel: round.channel_id,
           user: round.selected_user_id,
-          text: `⏰ Reminder: you're this week's album picker and have about ${remaining} hour${remaining === 1 ? "" : "s"} left to submit your nomination.`
+          text: `⏰ Reminder: you're this week's album picker and have about ${remaining} hour${remaining === 1 ? "" : "s"} left to submit your nomination.`,
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `⏰ *Reminder:* you're this week's album picker and have about *${remaining} hour${remaining === 1 ? "" : "s"}* left to submit your nomination.`
+              }
+            },
+            {
+              type: "actions",
+              elements: [
+                {
+                  type: "button",
+                  text: {
+                    type: "plain_text",
+                    text: "Submit nomination"
+                  },
+                  action_id: "open_nomination_modal",
+                  value: round.message_ts
+                }
+              ]
+            }
+          ]
         });
 
         await db.markReminderSent(round.id);
@@ -34,7 +56,6 @@ function hoursRemaining(deadlineAt) {
       }
     }
 
-    // 2) Reroll expired pending rounds
     const expired = await db.getExpiredPendingRounds(nowIso);
 
     for (const round of expired) {
