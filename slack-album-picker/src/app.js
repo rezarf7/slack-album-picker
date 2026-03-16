@@ -154,6 +154,49 @@ app.action("accept_pick", async ({ ack, body, client }) => {
   }
 });
 
+app.action("open_nomination_modal", async ({ ack, body, client }) => {
+  console.log("open_nomination_modal clicked", {
+    user: body.user?.id,
+    ts: body.message?.ts,
+    channel: body.channel?.id,
+    value: body.actions?.[0]?.value
+  });
+
+  await ack();
+
+  try {
+    const messageTs = body.actions?.[0]?.value;
+
+    if (!messageTs) {
+      await client.chat.postEphemeral({
+        channel: body.channel.id,
+        user: body.user.id,
+        text: "Sorry, I couldn't open the nomination form. Please try again."
+      });
+      return;
+    }
+
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: nominationModal(messageTs)
+    });
+
+    console.log("open_nomination_modal: modal opened");
+  } catch (err) {
+    console.error("open_nomination_modal failed:", err);
+
+    try {
+      await client.chat.postEphemeral({
+        channel: body.channel.id,
+        user: body.user.id,
+        text: "Sorry, I couldn't open the nomination form. Please try again."
+      });
+    } catch (postErr) {
+      console.error("open_nomination_modal ephemeral failed:", postErr);
+    }
+  }
+});
+
 app.view("submit_nomination", async ({ ack, body, view, client }) => {
   console.log("submit_nomination received");
 
